@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ghost League</title>
+<meta name="description" content="14-week cross-league ghost matchup between Fowler's League and Kyle's League. Every week you play a team from the other league; most League Points wins.">
+<meta name="theme-color" content="#0e1015">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%91%BB%3C/text%3E%3C/svg%3E">
+<meta property="og:title" content="Ghost League">
+<meta property="og:description" content="Fowler's League vs Kyle's League — 20 teams, 14 weeks, one title.">
+<meta property="og:type" content="website">
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="wrap">
+    <div class="brand">
+      <span class="ghost">&#128123;</span>
+      <div>
+        <h1>Ghost League</h1>
+        <p class="sub">2026 Season &middot; Fowler's League vs Kyle's League</p>
+      </div>
+    </div>
+    <nav class="tabs" id="tabs">
+      <a href="#/scoreboard" data-tab="scoreboard">Scoreboard</a>
+      <a href="#/schedule"   data-tab="schedule">Schedule</a>
+      <a href="#/standings"  data-tab="standings">Standings</a>
+      <a href="#/league/fowler" data-tab="fowler">Fowler's League</a>
+      <a href="#/league/kyle"   data-tab="kyle">Kyle's League</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap" id="view"></main>
+
+<footer class="wrap foot">
+  <p>Every matchup is cross-league &mdash; you never play your own league. Weeks 1&ndash;10 are a full round robin; weeks 11&ndash;14 are rematches of weeks 1&ndash;4.</p>
+  <p class="muted" id="storeNote"></p>
+</footer>
+
+<script src="data/schedule.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
