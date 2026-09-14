@@ -69,6 +69,32 @@ function loadConfig() {
 
 function die(msg) { console.error(`\n${msg}\n`); process.exit(1); }
 
+/* Cookie values get mangled in transit — pasted through a chat app, copied from a viewer
+   that shows them URL-decoded, or truncated. Catch that here with a clear message rather
+   than letting fetch() throw "Cannot convert argument to a ByteString". */
+function credentialProblem(league) {
+  const s2 = league.espn_s2 || '';
+  const swid = league.SWID || '';
+  if (!s2 || !swid) return null;                       // absent is handled elsewhere
+  // eslint-disable-next-line no-control-regex
+  if (/[^\x00-\xFF]/.test(s2) || /[^\x00-\xFF]/.test(swid)) {
+    const ch = [...s2].find((c) => c.charCodeAt(0) > 255);
+    return `espn_s2 contains a non-Latin-1 character (U+${ch.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')})` +
+           ` — the value was altered in transit and cannot be sent as a cookie. Re-copy it.`;
+  }
+  const stripped = s2.replace(/%[0-9A-Fa-f]{2}/g, '');
+  const odd = [...new Set([...stripped].filter((c) => !/[A-Za-z0-9]/.test(c)))];
+  if (odd.length) {
+    return `espn_s2 contains characters that never appear in a valid token (${odd.map((c) => JSON.stringify(c)).join(', ')})` +
+           ` — it looks URL-decoded or corrupted. Copy the raw value from Chrome DevTools >` +
+           ` Application > Cookies, not from a cookie viewer that decodes it.`;
+  }
+  if (!/^\{[0-9A-Fa-f-]{36}\}$/.test(swid)) {
+    return `SWID should look like {XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX} including the braces.`;
+  }
+  return null;
+}
+
 /* ---------- fetch helpers ---------- */
 
 async function getJSON(url, headers) {
@@ -152,10 +178,15 @@ function teamsFromSchedule(raw, week) {
 }
 
 function espnTeamMeta(raw) {
+  const members = {};
+  for (const m of raw.members || []) {
+    members[m.id] = `${m.firstName || ''} ${m.lastName || ''}`.trim() || m.displayName || '';
+  }
   return (raw.teams || []).map((t) => ({
     id: t.id,
     abbrev: t.abbrev || '',
-    name: (t.name || `${t.location || ''} ${t.nickname || ''}`).trim()
+    name: (t.name || `${t.location || ''} ${t.nickname || ''}`).trim(),
+    owners: (t.owners || []).map((o) => members[o]).filter(Boolean)
   }));
 }
 
@@ -179,6 +210,8 @@ function mapTeams(espnTeams, siteTeams, overrides, label) {
   for (const st of siteTeams) {
     if (byId[st.id]) continue;
     let i = pool.findIndex((e) => norm(e.abbrev) && norm(e.abbrev) === norm(st.abbrev));
+    // Managers rename their teams constantly; the person behind the team is the stable id.
+    if (i < 0) i = pool.findIndex((e) => (e.owners || []).some((ow) => norm(ow) && norm(ow) === norm(st.manager)));
     if (i < 0) i = pool.findIndex((e) => norm(e.name) === norm(st.name));
     if (i < 0) {
       // Site names from the screenshots are truncated ("Lemme Burrow a D…") — prefix match.
@@ -192,7 +225,7 @@ function mapTeams(espnTeams, siteTeams, overrides, label) {
   if (unmatched.length) {
     console.warn(`  ! ${label}: ${unmatched.length} site team(s) unmatched:`);
     unmatched.forEach((t) => console.warn(`      "${t.name}" (${t.abbrev})`));
-    console.warn(`    ESPN teams left over: ${pool.map((p) => `[${p.id}] "${p.name}" (${p.abbrev})`).join(', ') || 'none'}`);
+    console.warn(`    ESPN teams left over: ${pool.map((p) => `[${p.id}] "${p.name}" (${p.abbrev}) owner ${(p.owners || []).join('/') || '?'}`).join(', ') || 'none'}`);
     console.warn(`    Fix by adding a teamMap entry in tools/espn-config.json, e.g. {"F3": ${pool[0] ? pool[0].id : 7}}`);
   }
   return byId;
@@ -279,9 +312,16 @@ for (const key of LEAGUE_KEYS) {
   leagueInfo[key] = info;
 
   if (!lc.leagueId) { info.error = 'no leagueId configured'; console.log(`- ${key}: skipped (${info.error})`); continue; }
-  if (!lc.espn_s2 || !lc.SWID) {
-    info.error = 'no credentials — this is a private league, so espn_s2 + SWID are required';
-    console.log(`- ${key}: skipped (${info.error})`);
+
+  /* No credentials is not automatically fatal: a league whose commissioner has made it
+     viewable to the public answers fine without any cookie. Try, and only complain if
+     ESPN actually refuses. */
+  const anonymous = !lc.espn_s2 || !lc.SWID;
+
+  const credErr = credentialProblem(lc);
+  if (credErr) {
+    info.error = credErr;
+    console.error(`- ${key}: bad credentials — ${credErr}`);
     continue;
   }
 
@@ -293,7 +333,10 @@ for (const key of LEAGUE_KEYS) {
     try {
       raw = await pullWeek(lc, cfg.season, w);
     } catch (e) {
-      const hint = e.status === 401 ? ' — credentials rejected, or this account is not a member of that league'
+      const hint = e.status === 401
+        ? (anonymous
+            ? ' — this league is private and no credentials are configured. Either add espn_s2 + SWID from a member, or ask the commissioner to make the league viewable to the public (then no credentials are needed).'
+            : ' — credentials rejected, or this account is not a member of that league')
         : e.status === 404 ? ' — check leagueId and season'
         : '';
       info.error = `${e.message}${hint}`;
