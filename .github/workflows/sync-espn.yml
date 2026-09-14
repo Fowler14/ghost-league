@@ -1,0 +1,66 @@
+name: Sync ESPN box scores
+
+on:
+  schedule:
+    # Times are UTC. During the NFL season ET = UTC-4 (EDT) / UTC-5 (EST).
+    - cron: '*/20 17-23 * * 0'   # Sunday afternoon + evening games
+    - cron: '*/20 0-4  * * 1'    # Sunday night, spilling into Monday UTC
+    - cron: '*/20 0-4  * * 2'    # Monday Night Football
+    - cron: '*/20 0-4  * * 5'    # Thursday Night Football
+    - cron: '30 12 * * *'        # daily catch-up / final numbers
+  workflow_dispatch:              # "Run workflow" button
+
+concurrency:
+  group: sync-espn
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      ESPN_SEASON: '2026'
+      FOWLER_LEAGUE_ID: '1872426581'
+      KYLE_LEAGUE_ID: '1987253931'
+      ESPN_S2_FOWLER: ${{ secrets.ESPN_S2_FOWLER }}
+      SWID_FOWLER: ${{ secrets.SWID_FOWLER }}
+      ESPN_S2_KYLE: ${{ secrets.ESPN_S2_KYLE }}
+      SWID_KYLE: ${{ secrets.SWID_KYLE }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Check credentials are configured
+        id: creds
+        run: |
+          if [ -z "$ESPN_S2_FOWLER" ] && [ -z "$ESPN_S2_KYLE" ]; then
+            echo "No ESPN credentials in repository secrets — nothing to sync." >> $GITHUB_STEP_SUMMARY
+            echo "Add ESPN_S2_FOWLER / SWID_FOWLER (and ESPN_S2_KYLE / SWID_KYLE) under" >> $GITHUB_STEP_SUMMARY
+            echo "Settings > Secrets and variables > Actions." >> $GITHUB_STEP_SUMMARY
+            echo "ok=false" >> $GITHUB_OUTPUT
+          else
+            echo "ok=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Fetch box scores
+        if: steps.creds.outputs.ok == 'true'
+        run: node tools/fetch-espn.mjs
+
+      - name: Commit if anything changed
+        if: steps.creds.outputs.ok == 'true'
+        run: |
+          if git diff --quiet -- data/boxscores.js; then
+            echo "No score changes." >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/boxscores.js
+          git commit -m "Sync ESPN box scores"
+          git push
+          echo "Pushed updated box scores." >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,28 @@
+{
+  "_readme": [
+    "Copy this file to tools/espn-config.json (gitignored) and fill in the cookie values.",
+    "espn_s2 and SWID are live ESPN session credentials for whoever's account they belong to.",
+    "Never commit them, never paste them into chat, never put them in a public repo.",
+    "Each league needs credentials from someone who is a MEMBER of that league.",
+    "To get them: log in at fantasy.espn.com in Chrome, open DevTools > Application >",
+    "Cookies > https://fantasy.espn.com, and copy the values of 'espn_s2' and 'SWID'",
+    "(keep the curly braces on SWID).",
+    "teamMap is only needed if the script cannot auto-match a team: {\"F3\": 7} pairs",
+    "site team F3 with ESPN team id 7."
+  ],
+  "season": 2026,
+  "leagues": {
+    "fowler": {
+      "leagueId": "1872426581",
+      "espn_s2": "",
+      "SWID": "",
+      "teamMap": {}
+    },
+    "kyle": {
+      "leagueId": "1987253931",
+      "espn_s2": "",
+      "SWID": "",
+      "teamMap": {}
+    }
+  }
+}

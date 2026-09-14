@@ -1,3 +1,7 @@
 .DS_Store
 .claude/
 source-screenshots/
+
+# ESPN auth tokens — must never reach the public repo
+tools/espn-config.json
+.env

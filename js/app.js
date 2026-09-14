@@ -5,9 +5,11 @@
 
   var STORE = 'ghostLeague.v1';
   var DATA = JSON.parse(JSON.stringify(window.GHOST_DATA));
+  var BOX = window.GHOST_BOX || null;   // data/boxscores.js — ESPN rosters, points, NFL games
   var TEAM = {};      // id -> team object (with .league)
   var GAMES = [];     // flat list of every game, with .week
   var editing = false;
+  var MANUAL = {};    // game id -> true, for scores typed by hand (these beat ESPN)
   var standingsMode = 'overall';
 
   /* ---------- data plumbing ---------- */
@@ -20,6 +22,49 @@
     DATA.weeks.forEach(function (w) {
       w.games.forEach(function (g) { g.week = w.week; GAMES.push(g); });
     });
+    applyEspnNames();
+    applyEspnScores();
+  }
+
+  /* ESPN knows the full team names the screenshots truncated. Use them when we have them —
+     a manual rename in loadLocal() still wins, because that runs after this. */
+  function applyEspnNames() {
+    if (!BOX) return;
+    ['fowler', 'kyle'].forEach(function (lg) {
+      var info = BOX.leagues && BOX.leagues[lg];
+      if (!info || !info.connected) return;
+      Object.keys(info.names || {}).forEach(function (id) {
+        if (TEAM[id] && info.names[id]) TEAM[id].name = info.names[id];
+      });
+      Object.keys(info.abbrevs || {}).forEach(function (id) {
+        if (TEAM[id] && info.abbrevs[id]) TEAM[id].abbrev = info.abbrevs[id];
+      });
+    });
+  }
+
+  /* Weekly totals come from ESPN once a team's starters have actually kicked off.
+     Anything typed by hand in the score editor overrides this (loadLocal runs later). */
+  function applyEspnScores() {
+    if (!BOX) return;
+    GAMES.forEach(applyEspnScore);
+  }
+
+  function applyEspnScore(g) {
+    if (!BOX) return;
+    var wk = BOX.weeks && BOX.weeks[g.week];
+    if (!wk) return;
+    ['fowler', 'kyle'].forEach(function (lg) {
+      var t = wk.teams[g[lg]];
+      if (t && typeof t.total === 'number' && teamKickedOff(g.week, t)) g[lg + '_score'] = t.total;
+    });
+  }
+
+  function teamKickedOff(week, t) {
+    return (t.players || []).some(function (p) {
+      if (!p.starter) return false;
+      var ng = nflGame(week, p.nfl);
+      return ng && ng.state !== 'pre';
+    });
   }
 
   function loadLocal() {
@@ -31,7 +76,7 @@
     if (saved.scores) {
       GAMES.forEach(function (g) {
         var s = saved.scores[g.id];
-        if (s) { g.fowler_score = s[0]; g.kyle_score = s[1]; }
+        if (s) { g.fowler_score = s[0]; g.kyle_score = s[1]; MANUAL[g.id] = true; }
       });
     }
     if (saved.teams) {
@@ -46,7 +91,7 @@
   function saveLocal() {
     var scores = {}, teams = {};
     GAMES.forEach(function (g) {
-      if (g.fowler_score !== null || g.kyle_score !== null)
+      if (MANUAL[g.id] && (g.fowler_score !== null || g.kyle_score !== null))
         scores[g.id] = [g.fowler_score, g.kyle_score];
     });
     var orig = window.GHOST_DATA.leagues;
@@ -132,6 +177,66 @@
     return DATA.weeks.filter(function (w) { return w.week === n; })[0];
   }
 
+  /* ---------- ESPN box score helpers ---------- */
+
+  function boxFor(id, week) {
+    var wk = BOX && BOX.weeks && BOX.weeks[week];
+    return (wk && wk.teams[id]) || null;
+  }
+
+  function hasBox(g) { return !!(boxFor(g.fowler, g.week) || boxFor(g.kyle, g.week)); }
+
+  function nflGame(week, abbrev) {
+    var list = (BOX && BOX.nfl && BOX.nfl[week]) || [];
+    if (!abbrev) return null;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].home === abbrev || list[i].away === abbrev) return list[i];
+    }
+    return null;
+  }
+
+  /* "SF" when at home, "@SEA" when away — same as ESPN's OPP column. */
+  function oppText(week, abbrev) {
+    var ng = nflGame(week, abbrev);
+    if (!ng) return '<span class="dim">—</span>';
+    return ng.home === abbrev ? esc(ng.away) : '@' + esc(ng.home);
+  }
+
+  function statusText(week, abbrev) {
+    var ng = nflGame(week, abbrev);
+    if (!ng) return '<span class="dim">—</span>';
+    var home = ng.home === abbrev;
+    var mine = home ? ng.homeScore : ng.awayScore;
+    var them = home ? ng.awayScore : ng.homeScore;
+    if (ng.state === 'post') {
+      var r = mine > them ? 'W' : (mine < them ? 'L' : 'T');
+      return '<span class="' + (r === 'W' ? 'res-w' : r === 'L' ? 'res-l' : 'dim') + '">' +
+             r + ' ' + mine + '-' + them + '</span>';
+    }
+    if (ng.state === 'in') {
+      return '<span class="res-live">' + esc(ng.detail || (mine + '-' + them)) + '</span>';
+    }
+    return '<span class="dim">' + esc(ng.detail || 'Scheduled') + '</span>';
+  }
+
+  /* Live header numbers, the way ESPN frames them. */
+  function boxMeta(week, box) {
+    var m = { playing: 0, yet: 0, mins: 0, proj: 0 };
+    (box.players || []).forEach(function (p) {
+      if (!p.starter) return;
+      var ng = nflGame(week, p.nfl);
+      var state = ng ? ng.state : 'pre';
+      if (state === 'in') m.playing++;
+      else if (state === 'pre') m.yet++;
+      if (ng) m.mins += ng.minsLeft;
+      // Final players count what they scored; everyone else counts their projection.
+      m.proj += state === 'post' ? (p.fpts || 0) : (p.proj || 0);
+    });
+    m.proj = Math.round(m.proj * 10) / 10;
+    m.mins = Math.round(m.mins);
+    return m;
+  }
+
   /* ---------- helpers ---------- */
 
   function el(html) { var d = document.createElement('div'); d.innerHTML = html.trim(); return d.firstChild; }
@@ -142,6 +247,11 @@
   }
   function num(n, d) { return n === null || n === undefined ? '—' : Number(n).toFixed(d === undefined ? 1 : d); }
   function pts(n) { return n % 1 === 0 ? String(n) : n.toFixed(1); }
+  function fp(n) {
+    if (n === null || n === undefined) return '—';
+    var r = Math.round(n * 100) / 100;
+    return Math.round(r * 10) === r * 10 ? r.toFixed(1) : r.toFixed(2);
+  }
   function rec(s) { return s.t ? s.w + '-' + s.l + '-' + s.t : s.w + '-' + s.l; }
 
   /* Render one matchup row. Home team on the left. */
@@ -168,13 +278,23 @@
             '" data-side="' + L.lg + '" value="' + (L.s === null ? '' : L.s) + '">' +
             '<input type="number" step="0.01" placeholder="0.0" data-g="' + g.id +
             '" data-side="' + R.lg + '" value="' + (R.s === null ? '' : R.s) + '"></div>';
-    } else if (done) {
-      mid = '<div class="mid"><span class="score">' + num(L.s) + '</span>' +
-            '<span class="vs"> – </span><span class="score">' + num(R.s) + '</span></div>';
+    } else if (done || typeof L.s === 'number' || typeof R.s === 'number') {
+      // One league can be synced while the other is not — show the half we know.
+      var part = done ? '' : ' part';
+      mid = '<div class="mid"><span class="score' + part + '">' +
+            (typeof L.s === 'number' ? fp(L.s) : '—') + '</span>' +
+            '<span class="vs"> – </span><span class="score' + part + '">' +
+            (typeof R.s === 'number' ? fp(R.s) : '—') + '</span></div>';
     } else {
       mid = '<div class="mid"><span class="vs">vs</span></div>';
     }
-    return '<div class="match">' + side(L, lw, '') + mid + side(R, rw, 'away') + '</div>';
+    var linked = !opts.edit && !opts.nolink && hasBox(g);
+    if (linked) {
+      mid = mid.replace('</div>', '<span class="boxhint">Box score &rsaquo;</span></div>');
+    }
+    return '<div class="match' + (linked ? ' clickable' : '') + '"' +
+      (linked ? ' data-go="#/game/' + g.id + '"' : '') + '>' +
+      side(L, lw, '') + mid + side(R, rw, 'away') + '</div>';
   }
 
   function weekPicker(sel, onChange) {
@@ -217,7 +337,11 @@
         '<a href="#/standings"><button>Full leaderboard</button></a></div>';
     }
     h += '<div class="card">' + wk.games.map(function (g) { return matchRow(g); }).join('') + '</div>';
+    if (BOX && BOX.updated) {
+      h += '<p class="synced">' + syncNote() + '</p>';
+    }
     view.innerHTML = h;
+    wireGo();
   }
 
   function vSchedule(wkNum) {
@@ -238,12 +362,26 @@
     var x = el('<button class="ghostbtn">Export data file</button>');
     x.onclick = exportData; ctl.appendChild(x);
 
+    if (!editing) wireGo();
+
     if (editing) {
       view.querySelectorAll('input[data-g]').forEach(function (inp) {
         inp.addEventListener('input', function () {
           var g = GAMES.filter(function (q) { return q.id === inp.dataset.g; })[0];
           var v = inp.value.trim();
           g[inp.dataset.side + '_score'] = v === '' ? null : parseFloat(v);
+          var other = view.querySelector('input[data-g="' + g.id + '"][data-side="' +
+            (inp.dataset.side === 'fowler' ? 'kyle' : 'fowler') + '"]');
+          if (v === '' && (!other || other.value.trim() === '')) {
+            // Both cleared — stop overriding and let ESPN supply this matchup again.
+            delete MANUAL[g.id];
+            g.fowler_score = null; g.kyle_score = null;
+            applyEspnScore(g);
+            if (other) other.value = g[other.dataset.side + '_score'] === null ? '' : g[other.dataset.side + '_score'];
+            inp.value = g[inp.dataset.side + '_score'] === null ? '' : g[inp.dataset.side + '_score'];
+          } else {
+            MANUAL[g.id] = true;
+          }
           saveLocal();
         });
       });
@@ -401,10 +539,146 @@
         next.week + ' · ' + weekOf(next.week).label + '</div>' + matchRow(next) + '</div>'
         : '<div class="card" style="margin-bottom:18px"><div class="empty">Season complete — all 14 matchups played.</div></div>') +
 
+      lineupCard(id) +
+
       '<div class="card"><div class="pad" style="padding-bottom:0"><h3>Full Schedule</h3></div>' +
       '<table><thead><tr><th>Wk</th><th>Opponent (' + esc(DATA.leagues[opp].name) + ')</th>' +
       '<th class="hide-sm">Dates</th><th>Res</th><th>Score</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
     wireGo();
+  }
+
+  function syncNote() {
+    var when = new Date(BOX.updated);
+    var mins = Math.round((Date.now() - when.getTime()) / 60000);
+    var ago = mins < 1 ? 'just now'
+      : mins < 60 ? mins + ' min ago'
+      : mins < 1440 ? Math.round(mins / 60) + ' hr ago'
+      : Math.round(mins / 1440) + ' days ago';
+    var off = ['fowler', 'kyle'].filter(function (lg) {
+      return !(BOX.leagues[lg] && BOX.leagues[lg].connected);
+    });
+    var note = 'Player scores updated from ESPN ' + ago + '.';
+    if (off.length) {
+      note += ' Not connected: ' + off.map(function (lg) { return DATA.leagues[lg].name; }).join(', ') +
+        ' — run tools/fetch-espn.mjs with credentials for ' + (off.length > 1 ? 'those leagues' : 'that league') + '.';
+    }
+    return note;
+  }
+
+  /* ---------- box score (ESPN-style, two rosters side by side) ---------- */
+
+  function rosterTable(id, week, teamScore, bare) {
+    var box = boxFor(id, week);
+    var t = TEAM[id];
+    var lgc = t.league === 'fowler' ? 'f' : 'k';
+    var head = '<div class="pad bsCap"><span class="pill ' + lgc + '">' +
+      esc(DATA.leagues[t.league].short) + '</span> <b>' + esc(t.name) + '</b> Box Score</div>';
+    function wrap(inner) { return bare ? inner : '<div class="card">' + head + inner + '</div>'; }
+
+    if (!box) {
+      return wrap('<div class="empty">No ESPN data for this team yet.<br><span class="dim">' +
+        (BOX && BOX.leagues[t.league] && BOX.leagues[t.league].connected
+          ? 'The week has not been synced.'
+          : esc(DATA.leagues[t.league].name) + ' is not connected to ESPN yet.') +
+        '</span></div>');
+    }
+
+    function line(p) {
+      var ng = nflGame(week, p.nfl);
+      var notYet = !ng || ng.state === 'pre';
+      return '<tr>' +
+        '<td class="slot">' + esc(p.slot) + '</td>' +
+        '<td class="ply"><b>' + esc(p.name) + (p.inj ? '<i class="inj">' + esc(p.inj) + '</i>' : '') +
+        '</b><small>' + esc(p.nfl) + ' ' + esc(p.pos) + '</small></td>' +
+        '<td class="opp hide-xs">' + oppText(week, p.nfl) + '</td>' +
+        '<td class="st hide-sm">' + statusText(week, p.nfl) + '</td>' +
+        '<td class="dim">' + num(p.proj) + '</td>' +
+        '<td class="fp">' + (notYet ? '<span class="dim">—</span>' : fp(p.fpts)) + '</td></tr>';
+    }
+
+    var starters = (box.players || []).filter(function (p) { return p.starter; });
+    var bench = (box.players || []).filter(function (p) { return !p.starter; });
+
+    var body = starters.map(line).join('') +
+      '<tr class="tot"><td></td><td>Starters</td><td class="hide-xs"></td><td class="hide-sm"></td>' +
+      '<td>' + num(box.proj) + '</td><td class="fp">' + fp(teamScore === null ? box.total : teamScore) + '</td></tr>';
+
+    if (bench.length) {
+      body += '<tr class="sep"><td colspan="6">Bench</td></tr>' + bench.map(line).join('') +
+        '<tr class="tot dim"><td></td><td>Bench</td><td class="hide-xs"></td><td class="hide-sm"></td>' +
+        '<td>' + num(box.benchProj) + '</td><td>' + fp(box.benchTotal) + '</td></tr>';
+    }
+
+    return wrap('<div class="scrollx"><table class="box"><thead><tr><th>Slot</th><th>Player</th>' +
+      '<th class="hide-xs">Opp</th><th class="hide-sm">Status</th><th>Proj</th><th>Fpts</th></tr></thead><tbody>' +
+      body + '</tbody></table></div>');
+  }
+
+  function vGame(id) {
+    var g = GAMES.filter(function (q) { return q.id === id; })[0];
+    if (!g) { view.innerHTML = '<p class="empty">Matchup not found.</p>'; return; }
+    var wk = weekOf(g.week);
+    var homeIsF = g.home === 'fowler';
+    var L = homeIsF ? { id: g.fowler, lg: 'fowler', s: g.fowler_score } : { id: g.kyle, lg: 'kyle', s: g.kyle_score };
+    var R = homeIsF ? { id: g.kyle, lg: 'kyle', s: g.kyle_score } : { id: g.fowler, lg: 'fowler', s: g.fowler_score };
+    var done = played(g);
+
+    function head(o, right) {
+      var t = TEAM[o.id], st = teamStats(o.id);
+      return '<div class="bsTeam' + (right ? ' right' : '') + '">' +
+        '<a class="nm" href="#/team/' + t.id + '">' + esc(t.name) + '</a>' +
+        '<p class="nowk">' + rec(st) + ' &middot; ' + esc(t.manager) + '</p>' +
+        '<span class="pill ' + (o.lg === 'fowler' ? 'f' : 'k') + '">' +
+        esc(DATA.leagues[o.lg].short) + '</span></div>';
+    }
+
+    var lw = '', rw = '';
+    if (done) {
+      if (L.s > R.s) { lw = 'win'; rw = 'lose'; }
+      else if (R.s > L.s) { rw = 'win'; lw = 'lose'; }
+    }
+
+    function metaLine(o) {
+      var box = boxFor(o.id, g.week);
+      if (!box) return '<div class="bsMetaSide"><span class="dim">Not synced</span></div>';
+      var m = boxMeta(g.week, box);
+      return '<div class="bsMetaSide">' +
+        '<span>Playing <b>' + m.playing + '</b></span>' +
+        '<span>Yet to play <b>' + m.yet + '</b></span>' +
+        '<span>Proj <b>' + num(m.proj) + '</b></span>' +
+        '<span>Mins left <b>' + m.mins + '</b></span></div>';
+    }
+
+    view.innerHTML = '<a class="back" href="#/schedule/' + g.week + '">&larr; Week ' + g.week + ' &middot; ' + esc(wk.label) + '</a>' +
+      '<div class="card bsHead">' +
+      head(L, false) +
+      '<div class="bsScore"><span class="s ' + lw + '">' +
+      (typeof L.s === 'number' ? fp(L.s) : '—') + '</span>' +
+      '<span class="dash">–</span>' +
+      '<span class="s ' + rw + '">' +
+      (typeof R.s === 'number' ? fp(R.s) : '—') + '</span>' +
+      '<span class="wklbl">Week ' + g.week + (g.rematch ? ' &middot; rematch' : '') + '</span></div>' +
+      head(R, true) +
+      '</div>' +
+      '<div class="bsMeta">' + metaLine(L) + metaLine(R) + '</div>' +
+      '<div class="grid2">' + rosterTable(L.id, g.week, L.s) + rosterTable(R.id, g.week, R.s) + '</div>' +
+      (BOX && BOX.updated ? '<p class="synced">' + syncNote() + '</p>' : '');
+  }
+
+  /* Most recent week this team has ESPN data for. */
+  function lineupCard(id) {
+    if (!BOX) return '';
+    var weeks = Object.keys((BOX.weeks || {})).map(Number).sort(function (a, b) { return b - a; });
+    var week = null;
+    for (var i = 0; i < weeks.length; i++) { if (boxFor(id, weeks[i])) { week = weeks[i]; break; } }
+    if (week === null) return '';
+    var g = teamGames(id).filter(function (q) { return q.week === week; })[0];
+    return '<div class="card" style="margin-bottom:18px">' +
+      '<div class="pad bsCap" style="display:flex;justify-content:space-between;align-items:center;gap:10px">' +
+      '<span>Week ' + week + ' lineup</span>' +
+      (g ? '<a class="boxhint" href="#/game/' + g.id + '">Full matchup &rsaquo;</a>' : '') + '</div>' +
+      rosterTable(id, week, null, true) +
+      '</div>';
   }
 
   function wireGo() {
@@ -450,9 +724,13 @@
     else if (tab === 'standings') vStandings();
     else if (tab === 'league') vLeague(h[1] === 'kyle' ? 'kyle' : 'fowler');
     else if (tab === 'team') vTeam(h[1]);
+    else if (tab === 'game') vGame(h[1]);
     else vScoreboard();
 
-    var act = tab === 'league' ? h[1] : (tab === 'team' ? TEAM[h[1]] && TEAM[h[1]].league : tab);
+    var act = tab === 'league' ? h[1]
+      : tab === 'team' ? (TEAM[h[1]] && TEAM[h[1]].league)
+      : tab === 'game' ? 'schedule'
+      : tab;
     document.querySelectorAll('#tabs a').forEach(function (a) {
       a.classList.toggle('active', a.dataset.tab === act);
     });
