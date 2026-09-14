@@ -109,7 +109,7 @@
   }
 
   function noteStore() {
-    var n = GAMES.filter(played).length;
+    var n = GAMES.filter(gameFinal).length;
     var el = document.getElementById('storeNote');
     if (el) el.textContent = n
       ? n + ' of 140 matchups scored. Edits are saved in this browser only — use Export on the Schedule tab to write them into data/schedule.js.'
@@ -144,7 +144,7 @@
   function teamStats(id) {
     var lg = TEAM[id].league, s = { pts: 0, w: 0, l: 0, t: 0, pf: 0, pa: 0, gp: 0 };
     teamGames(id).forEach(function (g) {
-      if (!played(g)) return;
+      if (!gameFinal(g)) return;
       var mine = lg === 'fowler' ? g.fowler_score : g.kyle_score;
       var opp  = lg === 'fowler' ? g.kyle_score : g.fowler_score;
       s.gp++; s.pf += mine; s.pa += opp;
@@ -156,7 +156,7 @@
   function leagueTally() {
     var f = 0, k = 0, tie = 0;
     GAMES.forEach(function (g) {
-      if (!played(g)) return;
+      if (!gameFinal(g)) return;
       if (g.fowler_score > g.kyle_score) f++;
       else if (g.fowler_score < g.kyle_score) k++;
       else tie++;
@@ -219,6 +219,37 @@
     return '<span class="dim">' + esc(ng.detail || 'Scheduled') + '</span>';
   }
 
+  /* A team's week is done when every starter's NFL game is final. A starter with no game
+     that week (bye, or an empty slot) cannot score, so it does not hold the week open. */
+  function teamWeekComplete(week, id) {
+    var box = boxFor(id, week);
+    if (!box) return false;
+    var starters = (box.players || []).filter(function (p) { return p.starter; });
+    if (!starters.length) return false;
+    return starters.every(function (p) {
+      var ng = nflGame(week, p.nfl);
+      return !ng || ng.state === 'post';
+    });
+  }
+
+  /* A side with no ESPN roster but a score came from schedule.js or the editor — take it as done. */
+  function sideComplete(g, lg) {
+    if (!boxFor(g[lg], g.week)) return typeof g[lg + '_score'] === 'number';
+    return teamWeekComplete(g.week, g[lg]);
+  }
+
+  /* Only a finished matchup awards League Points. A game still in progress shows its live
+     score but counts for nothing — one starter yet to play can still swing it. */
+  function gameFinal(g) {
+    if (!played(g)) return false;
+    if (MANUAL[g.id]) return true;          // typed by hand = authoritative
+    return sideComplete(g, 'fowler') && sideComplete(g, 'kyle');
+  }
+
+  function gameLive(g) {
+    return !gameFinal(g) && (typeof g.fowler_score === 'number' || typeof g.kyle_score === 'number');
+  }
+
   /* Live header numbers, the way ESPN frames them. */
   function boxMeta(week, box) {
     var m = { playing: 0, yet: 0, mins: 0, proj: 0 };
@@ -261,7 +292,7 @@
     var fT = TEAM[g.fowler], kT = TEAM[g.kyle];
     var L = homeIsF ? { t: fT, lg: 'fowler', s: g.fowler_score } : { t: kT, lg: 'kyle', s: g.kyle_score };
     var R = homeIsF ? { t: kT, lg: 'kyle', s: g.kyle_score } : { t: fT, lg: 'fowler', s: g.fowler_score };
-    var done = played(g), lw = '', rw = '';
+    var done = gameFinal(g), lw = '', rw = '';
     if (done) {
       if (L.s > R.s) { lw = 'win'; rw = 'lose'; }
       else if (R.s > L.s) { rw = 'win'; lw = 'lose'; }
@@ -290,7 +321,8 @@
     }
     var linked = !opts.edit && !opts.nolink && hasBox(g);
     if (linked) {
-      mid = mid.replace('</div>', '<span class="boxhint">Box score &rsaquo;</span></div>');
+      var hint = gameLive(g) ? '<span class="livetag">Live</span> Box score &rsaquo;' : 'Box score &rsaquo;';
+      mid = mid.replace('</div>', '<span class="boxhint">' + hint + '</span></div>');
     }
     return '<div class="match' + (linked ? ' clickable' : '') + '"' +
       (linked ? ' data-go="#/game/' + g.id + '"' : '') + '>' +
@@ -498,7 +530,7 @@
     var s = teamStats(id), gs = teamGames(id);
     var oRank = rankIn(overall(), id), lRank = rankIn(standings(lg), id);
 
-    var next = gs.filter(function (g) { return !played(g); })[0];
+    var next = gs.filter(function (g) { return !gameFinal(g); })[0];
 
     var rows = gs.map(function (g) {
       var o = TEAM[g[opp]];
@@ -506,9 +538,13 @@
       var them = lg === 'fowler' ? g.kyle_score : g.fowler_score;
       var res = '<span class="dim">—</span>', sc = '<span class="dim">—</span>';
       if (played(g)) {
-        var wl = mine > them ? 'W' : (mine < them ? 'L' : 'T');
-        res = '<b style="color:var(--' + (wl === 'W' ? 'win' : wl === 'L' ? 'loss' : 'muted') + ')">' + wl + '</b>';
-        sc = num(mine) + ' – ' + num(them);
+        sc = fp(mine) + ' – ' + fp(them);
+        if (gameFinal(g)) {
+          var wl = mine > them ? 'W' : (mine < them ? 'L' : 'T');
+          res = '<b style="color:var(--' + (wl === 'W' ? 'win' : wl === 'L' ? 'loss' : 'muted') + ')">' + wl + '</b>';
+        } else {
+          res = '<span class="livetag">Live</span>';
+        }
       }
       var wk = weekOf(g.week);
       return '<tr class="clickable" data-go="#/team/' + o.id + '">' +
@@ -621,7 +657,7 @@
     var homeIsF = g.home === 'fowler';
     var L = homeIsF ? { id: g.fowler, lg: 'fowler', s: g.fowler_score } : { id: g.kyle, lg: 'kyle', s: g.kyle_score };
     var R = homeIsF ? { id: g.kyle, lg: 'kyle', s: g.kyle_score } : { id: g.fowler, lg: 'fowler', s: g.fowler_score };
-    var done = played(g);
+    var done = gameFinal(g);
 
     function head(o, right) {
       var t = TEAM[o.id], st = teamStats(o.id);
@@ -657,7 +693,9 @@
       '<span class="dash">–</span>' +
       '<span class="s ' + rw + '">' +
       (typeof R.s === 'number' ? fp(R.s) : '—') + '</span>' +
-      '<span class="wklbl">Week ' + g.week + (g.rematch ? ' &middot; rematch' : '') + '</span></div>' +
+      '<span class="wklbl">Week ' + g.week + (g.rematch ? ' &middot; rematch' : '') +
+      (gameFinal(g) ? ' &middot; Final' : gameLive(g) ? ' &middot; <span class="livetag">In progress</span>' : '') +
+      '</span></div>' +
       head(R, true) +
       '</div>' +
       '<div class="bsMeta">' + metaLine(L) + metaLine(R) + '</div>' +

@@ -212,3 +212,9 @@ table.box tr.sep td,table.box tr.tot td{}
 }
 /* one league synced, the other not yet */
 .match .score.part{color:var(--muted);font-weight:600}
+/* a matchup still in progress — shown, but not scored */
+.livetag{display:inline-block;font-size:9px;font-weight:800;letter-spacing:.6px;
+  text-transform:uppercase;color:#14101f;background:var(--accent);
+  border-radius:3px;padding:1px 4px;vertical-align:middle;position:relative;top:-1px}
+.wklbl .livetag{font-size:9px}
+td .livetag{top:0}
